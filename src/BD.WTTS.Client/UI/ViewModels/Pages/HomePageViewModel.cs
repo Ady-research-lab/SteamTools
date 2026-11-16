@@ -107,6 +107,11 @@ public sealed class HomePageViewModel : TabItemViewModel
     {
         try
         {
+            if (!UISettings.IsShowAdvertisement.Value)
+            {
+                NavigationBanners.Clear();
+                return;
+            }
             var result3 = await Instance.Advertisement.All(AdvertisementType.DeskTopHomeBanner);
             if (result3.IsSuccess && result3.Content != null)
             {

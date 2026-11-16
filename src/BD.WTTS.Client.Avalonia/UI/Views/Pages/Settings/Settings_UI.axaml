@@ -39,11 +39,9 @@
             </ui:FASettingsExpander>
         </Border>
 
-        <Border IsEnabled="{Binding Path=User, Mode=OneWay, Source={x:Static s:UserService.Current}, Converter={StaticResource IsNullConverter}, ConverterParameter=invert}">
+        <Border>
             <ui:FASettingsExpander
-                Description="{Binding Path=Res.Advertisement_NoShow_Tip, Mode=OneWay, Source={x:Static s:ResourceService.Current}}"
-                Header="{Binding Path=Res.Advertisement_NoShow, Mode=OneWay, Source={x:Static s:ResourceService.Current}}"
-                IsEnabled="{Binding Path=User?.UserType, Mode=OneWay, Source={x:Static s:UserService.Current}, Converter={StaticResource EnumEqualValueConverter}, ConverterParameter={x:Static enum:UserType.Sponsor}}">
+                Header="{Binding Path=Res.Advertisement_NoShow, Mode=OneWay, Source={x:Static s:ResourceService.Current}}">
                 <ui:FASettingsExpander.IconSource>
                     <ui:FAFontIconSource FontFamily="{StaticResource SymbolThemeFontFamily}" Glyph="{StaticResource HeartBroken}" />
                 </ui:FASettingsExpander.IconSource>
