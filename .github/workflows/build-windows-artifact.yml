@@ -63,28 +63,32 @@ jobs:
           New-Item -ItemType Directory -Path $out -Force | Out-Null
 
           $bin = Join-Path $env:GITHUB_WORKSPACE 'src/BD.WTTS.Client.Avalonia.App/bin/Release'
-          if (-not (Test-Path $bin)) { throw "Build output not found: $bin" }
+          if (-not (Test-Path -LiteralPath $bin)) { throw "Build output not found: $bin" }
 
-          # 1) 官方 7z 包（路径形如 <publishRoot>.7z，publishRoot 为发布目录根）
+          # 官方工具产物文件名含 "[Release] " 前缀（方括号）。
+          # PowerShell 的 Copy-Item/Test-Path/Compress-Archive 默认把路径按通配符解析，
+          # "[Release]" 会被当作字符集通配 → 匹配 0 项 → 什么都不复制。
+          # 因此全部使用 -LiteralPath，并清掉 "[Release] " 前缀。
+
+          # 1) 官方 7z 包
           $packs = Get-ChildItem -Path $bin -Recurse -Filter *.7z
           if (-not $packs) { throw "No .7z package produced" }
           foreach ($p in $packs) {
-            Copy-Item $p.FullName $out -Force
-            # 2) 兜底：把 7z 对应的发布目录原样压成 zip（解包不依赖 7-Zip）
-            $pubRoot = $p.FullName.Substring(0, $p.FullName.Length - 3)  # strip ".7z"
-            if (Test-Path $pubRoot) {
-              $zip = Join-Path $out 'Steam++_win_x64_portable.zip'
-              if (Test-Path $zip) { Remove-Item $zip -Force }
-              Compress-Archive -Path (Join-Path $pubRoot '*') -DestinationPath $zip -CompressionLevel Optimal -Force
-            }
+            $clean = $p.Name -replace '^\[Release\] ', ''
+            Copy-Item -LiteralPath $p.FullName -Destination (Join-Path $out $clean) -Force
+            Write-Host "collected: $($p.FullName) -> $clean ($([math]::Round($p.Length/1MB,1)) MB)"
           }
 
-          # 3) MSIX 包（如生成成功）
-          Get-ChildItem -Path $bin -Recurse -Filter *.msix -ErrorAction SilentlyContinue |
-            ForEach-Object { Copy-Item $_.FullName $out -Force }
+          # 2) MSIX 包（如生成成功）
+          $msix = Get-ChildItem -Path $bin -Recurse -Filter *.msix -ErrorAction SilentlyContinue
+          foreach ($m in $msix) {
+            $clean = $m.Name -replace '^\[Release\] ', ''
+            Copy-Item -LiteralPath $m.FullName -Destination (Join-Path $out $clean) -Force
+            Write-Host "collected: $($m.FullName) -> $clean ($([math]::Round($m.Length/1MB,1)) MB)"
+          }
 
           Write-Host "=== Artifact contents ==="
-          Get-ChildItem $out | Format-Table Name, @{L='MB';E={[math]::Round($_.Length/1MB,1)}} -AutoSize
+          Get-ChildItem -LiteralPath $out | Format-Table Name, @{L='MB';E={[math]::Round($_.Length/1MB,1)}} -AutoSize
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
