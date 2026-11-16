@@ -1,9 +1,7 @@
 name: Build Windows (Artifact)
 
-# 构建 Windows 端（win-x64），产物仅上传为 workflow artifact，不创建 Release。
-# 基于官方发布工具 BD.WTTS.Client.Tools.Publish 的 `run --rids win-x64` 流程：
-#   publish 主程序 → 发布插件模块(modules) → 拷贝运行时 → 图标/脚本 → MSIX → 7z 包
-# 无代码签名证书时签名步骤自动跳过（SignTool.Start 中 File.Exists(pfx)==false 即 return）。
+# win-x64 构建，产物仅上传为 artifact，不创建 Release。
+# 依赖官方发布工具 `run --rids win-x64`；无签名证书时签名自动跳过。
 
 on:
   workflow_dispatch:
@@ -28,52 +26,35 @@ jobs:
           fetch-depth: 1
           submodules: recursive
 
-      - name: Setup .NET 11 SDK (official RC3, same as upstream build machine)
+      - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          # AppHost(Steam++.exe) 与发布工具 CopyRuntime 均硬编码 runtime 版本
-          # 11.0.0-rc.3.26522.148，必须用同版本 SDK 才能拷出配套 runtime
+          # AppHost 与 CopyRuntime 硬编码 runtime 11.0.0-rc.3.26522.148，SDK 必须同版本
           dotnet-version: '11.0.100-rc.3.26522.148'
 
-      - name: Allow prerelease SDK in global.json
-        shell: pwsh
-        run: |
-          $p = 'global.json'
-          $j = Get-Content $p -Raw | ConvertFrom-Json
-          $j.sdk.version = '11.0.100-rc.3.26522.148'
-          $j.sdk.allowPrerelease = $true
-          $j | ConvertTo-Json -Depth 5 | Set-Content $p -Encoding UTF8
-          Get-Content $p
-
-      - name: Verify environment
+      - name: Prepare environment
         shell: pwsh
         run: |
           dotnet --info
-          # 打包环节使用 SevenZipSharp，依赖原生 7z.dll（硬编码 %ProgramFiles%\7-Zip\7z.dll）
-          $z7 = Join-Path $env:ProgramFiles '7-Zip\7z.dll'
-          if (-not (Test-Path $z7)) {
-            Write-Host "7-Zip not found, installing via choco..."
-            choco install 7zip -y --no-progress
-          }
-          if (-not (Test-Path $z7)) { throw "7z.dll missing at $z7" }
-          # MSIX 打包需要 Windows SDK 的 makepri.exe / makeappx.exe
-          $sdk = 'C:\Program Files (x86)\Windows Kits\10\bin'
-          if (-not (Test-Path $sdk)) { throw "Windows SDK not found at $sdk (makepri/makeappx required)" }
-          Write-Host "Windows SDK found:"
-          Get-ChildItem $sdk -Directory | Select-Object -ExpandProperty Name
-          # CopyRuntime 依赖此处的 shared frameworks 目录（按版本目录名整拷）
-          $shared = 'C:\Program Files\dotnet\shared'
-          if (Test-Path $shared) {
-            Write-Host "dotnet shared frameworks:"
-            Get-ChildItem $shared -Directory | ForEach-Object {
-              Write-Host ("  " + $_.Name + ": " + (($_.GetDirectories().Name) -join ', '))
-            }
-          } else { throw "dotnet shared frameworks not found (CopyRuntime would silently skip)" }
+          # 放开 global.json 的 prerelease 限制
+          $g = Get-Content global.json -Raw | ConvertFrom-Json
+          $g.sdk.version = '11.0.100-rc.3.26522.148'
+          $g.sdk.allowPrerelease = $true
+          $g | ConvertTo-Json -Depth 5 | Set-Content global.json -Encoding UTF8
 
-      - name: Publish win-x64 (official tool)
-        shell: pwsh
-        run: |
-          dotnet run --project src/BD.WTTS.Client.Tools.Publish -c Release -- run --rids win-x64
+          # 依赖断言：7z.dll（SevenZipSharp 打包用）、Windows SDK（makepri/makeappx）、
+          # shared frameworks（CopyRuntime 按版本目录整拷，缺目录会静默跳过）
+          $deps = @(
+            (Join-Path $env:ProgramFiles '7-Zip\7z.dll'),
+            'C:\Program Files (x86)\Windows Kits\10\bin',
+            'C:\Program Files\dotnet\shared\Microsoft.NETCore.App\11.0.0-rc.3.26522.148',
+            'C:\Program Files\dotnet\shared\Microsoft.AspNetCore.App\11.0.0-rc.3.26522.148',
+            'C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App\11.0.0-rc.3.26522.148'
+          )
+          $deps | Where-Object { -not (Test-Path $_) } | ForEach-Object { throw "Missing: $_" }
+
+      - name: Publish win-x64
+        run: dotnet run --project src/BD.WTTS.Client.Tools.Publish -c Release -- run --rids win-x64
 
       - name: Collect artifacts
         shell: pwsh
@@ -81,34 +62,14 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $out = Join-Path $env:GITHUB_WORKSPACE '_artifacts'
           New-Item -ItemType Directory -Path $out -Force | Out-Null
-
-          $bin = Join-Path $env:GITHUB_WORKSPACE 'src/BD.WTTS.Client.Avalonia.App/bin/Release'
-          if (-not (Test-Path -LiteralPath $bin)) { throw "Build output not found: $bin" }
-
-          # 官方工具产物文件名含 "[Release] " 前缀（方括号）。
-          # PowerShell 的 Copy-Item/Test-Path/Compress-Archive 默认把路径按通配符解析，
-          # "[Release]" 会被当作字符集通配 → 匹配 0 项 → 什么都不复制。
-          # 因此全部使用 -LiteralPath，并清掉 "[Release] " 前缀。
-
-          # 1) 官方 7z 包
-          $packs = Get-ChildItem -Path $bin -Recurse -Filter *.7z
-          if (-not $packs) { throw "No .7z package produced" }
-          foreach ($p in $packs) {
-            $clean = $p.Name -replace '^\[Release\] ', ''
-            Copy-Item -LiteralPath $p.FullName -Destination (Join-Path $out $clean) -Force
-            Write-Host "collected: $($p.FullName) -> $clean ($([math]::Round($p.Length/1MB,1)) MB)"
-          }
-
-          # 2) MSIX 包（如生成成功）
-          $msix = Get-ChildItem -Path $bin -Recurse -Filter *.msix -ErrorAction SilentlyContinue
-          foreach ($m in $msix) {
-            $clean = $m.Name -replace '^\[Release\] ', ''
-            Copy-Item -LiteralPath $m.FullName -Destination (Join-Path $out $clean) -Force
-            Write-Host "collected: $($m.FullName) -> $clean ($([math]::Round($m.Length/1MB,1)) MB)"
-          }
-
-          Write-Host "=== Artifact contents ==="
-          Get-ChildItem -LiteralPath $out | Format-Table Name, @{L='MB';E={[math]::Round($_.Length/1MB,1)}} -AutoSize
+          # 产物文件名含 "[Release] " 前缀，方括号会被 PS 当通配符，须用 -LiteralPath
+          Get-ChildItem 'src/BD.WTTS.Client.Avalonia.App/bin/Release' -Recurse -Include *.7z, *.msix |
+            ForEach-Object {
+              $dst = Join-Path $out ($_.Name -replace '^\[Release\] ', '')
+              Copy-Item -LiteralPath $_.FullName -Destination $dst -Force
+              Write-Host "collected: $($_.Name) ($([math]::Round($_.Length/1MB,1)) MB)"
+            }
+          if (-not (Get-ChildItem -LiteralPath $out)) { throw 'No artifacts collected' }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
