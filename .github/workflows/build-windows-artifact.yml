@@ -1,0 +1,95 @@
+name: Build Windows (Artifact)
+
+# 构建 Windows 端（win-x64），产物仅上传为 workflow artifact，不创建 Release。
+# 基于官方发布工具 BD.WTTS.Client.Tools.Publish 的 `run --rids win-x64` 流程：
+#   publish 主程序 → 发布插件模块(modules) → 拷贝运行时 → 图标/脚本 → MSIX → 7z 包
+# 无代码签名证书时签名步骤自动跳过（SignTool.Start 中 File.Exists(pfx)==false 即 return）。
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ci/build-windows
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_NOLOGO: true
+
+jobs:
+  build-windows-x64:
+    name: Windows x64 → artifact
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Setup .NET 11 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.x
+
+      - name: Verify environment
+        shell: pwsh
+        run: |
+          dotnet --info
+          # 打包环节使用 SevenZipSharp，依赖原生 7z.dll（硬编码 %ProgramFiles%\7-Zip\7z.dll）
+          $z7 = Join-Path $env:ProgramFiles '7-Zip\7z.dll'
+          if (-not (Test-Path $z7)) {
+            Write-Host "7-Zip not found, installing via choco..."
+            choco install 7zip -y --no-progress
+          }
+          if (-not (Test-Path $z7)) { throw "7z.dll missing at $z7" }
+          # MSIX 打包需要 Windows SDK 的 makepri.exe / makeappx.exe
+          $sdk = 'C:\Program Files (x86)\Windows Kits\10\bin'
+          if (-not (Test-Path $sdk)) { throw "Windows SDK not found at $sdk (makepri/makeappx required)" }
+          Write-Host "Windows SDK found:"
+          Get-ChildItem $sdk -Directory | Select-Object -ExpandProperty Name
+
+      - name: Publish win-x64 (official tool)
+        shell: pwsh
+        run: |
+          dotnet run --project src/BD.WTTS.Client.Tools.Publish -c Release -- run --rids win-x64
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:GITHUB_WORKSPACE '_artifacts'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+
+          $bin = Join-Path $env:GITHUB_WORKSPACE 'src/BD.WTTS.Client.Avalonia.App/bin/Release'
+          if (-not (Test-Path $bin)) { throw "Build output not found: $bin" }
+
+          # 1) 官方 7z 包（路径形如 <publishRoot>.7z，publishRoot 为发布目录根）
+          $packs = Get-ChildItem -Path $bin -Recurse -Filter *.7z
+          if (-not $packs) { throw "No .7z package produced" }
+          foreach ($p in $packs) {
+            Copy-Item $p.FullName $out -Force
+            # 2) 兜底：把 7z 对应的发布目录原样压成 zip（解包不依赖 7-Zip）
+            $pubRoot = $p.FullName.Substring(0, $p.FullName.Length - 3)  # strip ".7z"
+            if (Test-Path $pubRoot) {
+              $zip = Join-Path $out 'Steam++_win_x64_portable.zip'
+              if (Test-Path $zip) { Remove-Item $zip -Force }
+              Compress-Archive -Path (Join-Path $pubRoot '*') -DestinationPath $zip -CompressionLevel Optimal -Force
+            }
+          }
+
+          # 3) MSIX 包（如生成成功）
+          Get-ChildItem -Path $bin -Recurse -Filter *.msix -ErrorAction SilentlyContinue |
+            ForEach-Object { Copy-Item $_.FullName $out -Force }
+
+          Write-Host "=== Artifact contents ==="
+          Get-ChildItem $out | Format-Table Name, @{L='MB';E={[math]::Round($_.Length/1MB,1)}} -AutoSize
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Steam++_win-x64_${{ github.run_number }}
+          path: _artifacts/
+          retention-days: 7
+          if-no-files-found: error
