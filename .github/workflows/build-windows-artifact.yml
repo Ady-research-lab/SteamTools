@@ -63,7 +63,7 @@ jobs:
           $out = Join-Path $env:GITHUB_WORKSPACE '_artifacts'
           New-Item -ItemType Directory -Path $out -Force | Out-Null
           # 产物文件名含 "[Release] " 前缀，方括号会被 PS 当通配符，须用 -LiteralPath
-          Get-ChildItem 'src/BD.WTTS.Client.Avalonia.App/bin/Release' -Recurse -Include *.7z, *.msix |
+          Get-ChildItem 'src/BD.WTTS.Client.Avalonia.App/bin/Release' -Recurse -Include *.7z |
             ForEach-Object {
               $dst = Join-Path $out ($_.Name -replace '^\[Release\] ', '')
               Copy-Item -LiteralPath $_.FullName -Destination $dst -Force
@@ -74,7 +74,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: Steam++_win-x64_${{ github.run_number }}
+          name: Steam++_win-x64
           path: _artifacts/
           retention-days: 7
           if-no-files-found: error
