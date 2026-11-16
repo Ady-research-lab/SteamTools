@@ -28,10 +28,22 @@ jobs:
           fetch-depth: 1
           submodules: recursive
 
-      - name: Setup .NET 11 SDK
+      - name: Setup .NET 11 SDK (official RC3, same as upstream build machine)
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 11.0.x
+          # AppHost(Steam++.exe) 与发布工具 CopyRuntime 均硬编码 runtime 版本
+          # 11.0.0-rc.3.26522.148，必须用同版本 SDK 才能拷出配套 runtime
+          dotnet-version: '11.0.100-rc.3.26522.148'
+
+      - name: Allow prerelease SDK in global.json
+        shell: pwsh
+        run: |
+          $p = 'global.json'
+          $j = Get-Content $p -Raw | ConvertFrom-Json
+          $j.sdk.version = '11.0.100-rc.3.26522.148'
+          $j.sdk.allowPrerelease = $true
+          $j | ConvertTo-Json -Depth 5 | Set-Content $p -Encoding UTF8
+          Get-Content $p
 
       - name: Verify environment
         shell: pwsh
@@ -49,6 +61,14 @@ jobs:
           if (-not (Test-Path $sdk)) { throw "Windows SDK not found at $sdk (makepri/makeappx required)" }
           Write-Host "Windows SDK found:"
           Get-ChildItem $sdk -Directory | Select-Object -ExpandProperty Name
+          # CopyRuntime 依赖此处的 shared frameworks 目录（按版本目录名整拷）
+          $shared = 'C:\Program Files\dotnet\shared'
+          if (Test-Path $shared) {
+            Write-Host "dotnet shared frameworks:"
+            Get-ChildItem $shared -Directory | ForEach-Object {
+              Write-Host ("  " + $_.Name + ": " + (($_.GetDirectories().Name) -join ', '))
+            }
+          } else { throw "dotnet shared frameworks not found (CopyRuntime would silently skip)" }
 
       - name: Publish win-x64 (official tool)
         shell: pwsh
